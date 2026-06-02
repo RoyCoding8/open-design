@@ -1,0 +1,78 @@
+name: build-win-exe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build_win:
+    name: Build Windows x64 exe
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10.33.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
+      - name: Ensure Electron binary is present
+        shell: pwsh
+        run: |
+          $match = Get-ChildItem -Path "node_modules/.pnpm" -Filter "electron" -Directory -Recurse -Depth 3 |
+            Where-Object { $_.FullName -match "electron@[\d.]+[/\\]node_modules[/\\]electron$" } |
+            Select-Object -First 1 -ExpandProperty FullName
+          $electronDist = Join-Path $match "dist"
+          Write-Host "Electron dist path: $electronDist"
+
+          if (Test-Path "$electronDist\electron.exe") {
+            Write-Host "electron.exe already present"
+            exit 0
+          }
+
+          Write-Host "electron.exe missing — downloading from GitHub releases..."
+          $version = "41.3.0"
+          $zipUrl = "https://github.com/electron/electron/releases/download/v$version/electron-v$version-win32-x64.zip"
+          $zipPath = "$env:TEMP\electron-win32-x64.zip"
+
+          Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
+          New-Item -ItemType Directory -Force -Path $electronDist | Out-Null
+          Expand-Archive -Path $zipPath -DestinationPath $electronDist -Force
+          Remove-Item $zipPath -Force
+
+          if (Test-Path "$electronDist\electron.exe") {
+            Write-Host "electron.exe downloaded and extracted successfully"
+          } else {
+            Write-Error "electron.exe still not found after download"
+            Get-ChildItem $electronDist | Format-Table Name
+            exit 1
+          }
+
+      - name: Build Windows exe
+        shell: pwsh
+        run: pnpm exec tools-pack win build --to nsis
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: open-design-win-installer
+          path: .tmp/tools-pack/out/win/**/*-setup.exe
+          if-no-files-found: error
